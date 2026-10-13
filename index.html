@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <!-- interactive-widget: com o teclado aberto a tela encolhe, e o formulário continua visível. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <!-- O app só carrega arquivos próprios: nenhum dado sai do aparelho.
+       O ponto e vírgula final é necessário: antivírus que inspecionam páginas http (visto com
+       o Kaspersky no PC) acrescentam regras ao fim desta lista, e sem ele elas saem malformadas. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self';">
+  <title>Controle Financeiro</title>
+  <meta name="description" content="Controle financeiro pessoal. Os dados ficam só neste aparelho.">
+  <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icones/icone.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icones/icone-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="lateral">
+      <div class="marca">Controle Financeiro</div>
+      <nav id="nav" aria-label="Seções">
+        <a href="#painel">
+          <svg class="icone" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20v-8M12 20V5M19 20v-5M3 20h18"/></svg>
+          <span>Painel</span>
+        </a>
+        <a href="#lancamentos">
+          <svg class="icone" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></svg>
+          <span>Lançamentos</span>
+        </a>
+        <a href="#orcamento">
+          <svg class="icone" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3v9l6.4 6.4"/></svg>
+          <span>Orçamento</span>
+        </a>
+        <a href="#contas">
+          <svg class="icone" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M3 10h18M7 14.5h3"/></svg>
+          <span>Contas</span>
+        </a>
+        <a href="#ajustes">
+          <svg class="icone" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h8M18 7h2M4 17h2M12 17h8"/><circle cx="15" cy="7" r="2.5"/><circle cx="9" cy="17" r="2.5"/></svg>
+          <span>Ajustes</span>
+        </a>
+      </nav>
+    </aside>
+
+    <main>
+      <header class="topo">
+        <h1 id="titulo"></h1>
+        <div class="mes-nav" id="mes-nav">
+          <button type="button" class="btn icone-btn" id="mes-anterior" aria-label="Mês anterior">&#8249;</button>
+          <button type="button" class="mes-rotulo" id="mes-rotulo" title="Voltar ao mês atual"></button>
+          <button type="button" class="btn icone-btn" id="mes-proximo" aria-label="Próximo mês">&#8250;</button>
+        </div>
+        <button type="button" class="btn primario" id="novo-lancamento" aria-label="Novo lançamento">
+          <span aria-hidden="true">+</span><span class="rotulo">Novo lançamento</span>
+        </button>
+      </header>
+      <section id="view"></section>
+    </main>
+  </div>
+
+  <dialog id="dialogo"></dialog>
+  <div id="dica" class="dica" role="tooltip" hidden></div>
+  <div id="aviso" class="aviso" role="status" hidden></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

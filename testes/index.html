@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Testes · Controle Financeiro</title>
+  <link rel="icon" href="../icones/icone.svg" type="image/svg+xml">
+  <style>
+    body { margin: 24px; font: 15px/1.5 system-ui, sans-serif; }
+    li { margin: 2px 0; }
+    .falhou { color: #b42a2a; font-weight: 600; }
+    pre { margin: 2px 0 8px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Testes dos dados e das regras</h1>
+  <p>Rodam neste navegador, em bancos temporários que são apagados ao final. Seus dados não são tocados.</p>
+  <p id="resultado">Rodando…</p>
+  <ol id="lista"></ol>
+  <script type="module" src="testes.js"></script>
+</body>
+</html>
