@@ -29,7 +29,10 @@ const FORMATO_BACKUP = 'controle-financeiro';
 // 3 = contas com banco, agência e número, e cartões com limite, bandeira e datas;
 // 4 = lançamentos de compras parceladas.
 const VERSAO_BACKUP = 4;
-const VERSAO_BANCO = 2;
+const VERSAO_BANCO = 3; // a 3 criou a loja "acesso", com o usuário e a senha do aparelho
+// A senha nunca é gravada: guarda-se o resultado de PBKDF2-SHA256 sobre ela, com sal.
+const ITERACOES_DA_SENHA = 310_000;
+const ERROS_SEM_ESPERA = 5;
 // Mês atribuído aos limites criados antes de o orçamento ter histórico: eles valiam
 // para todos os meses, então continuam valendo desde sempre.
 const DESDE_SEMPRE = '0000-01';
@@ -266,6 +269,29 @@ export function validarBackup(backup) {
   return { formato: FORMATO_BACKUP, versao: VERSAO_BACKUP, contas, categorias, lancamentos, orcamentos };
 }
 
+// ---------------------------------------------------------------- usuário e senha
+
+async function derivarSenha(senha, sal, iteracoes) {
+  const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(senha), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: sal, iterations: iteracoes }, material, 256);
+  return new Uint8Array(bits);
+}
+
+// Percorre tudo antes de responder, para o tempo gasto não indicar onde está a diferença.
+function bytesIguais(a, b) {
+  if (a.length !== b.length) return false;
+  let diferenca = 0;
+  for (let i = 0; i < a.length; i += 1) diferenca |= a[i] ^ b[i];
+  return diferenca === 0;
+}
+
+function esperaEmTexto(ms) {
+  const segundos = Math.ceil(ms / 1000);
+  if (segundos < 60) return `${segundos} ${segundos === 1 ? 'segundo' : 'segundos'}`;
+  const minutos = Math.ceil(segundos / 60);
+  return `${minutos} ${minutos === 1 ? 'minuto' : 'minutos'}`;
+}
+
 // ---------------------------------------------------------------- IndexedDB
 
 function abrirIDB(nome) {
@@ -295,6 +321,7 @@ function abrirIDB(nome) {
           }
         };
       }
+      if (ev.oldVersion < 3) idb.createObjectStore('acesso', { keyPath: 'id' });
     };
     pedido.onsuccess = () => ok(pedido.result);
     pedido.onerror = () => falha(pedido.error);
@@ -757,6 +784,96 @@ export async function abrirBanco(nome = 'controle-financeiro') {
     });
   }
 
+  // ---- usuário e senha do aparelho
+  //
+  // É uma tranca de acesso: o app só mostra os dados depois de conferir usuário e senha.
+  // Os dados em si não são criptografados. O registro fica no mesmo banco dos dados, para
+  // que apagar um apague o outro, e não entra nem sai pelo backup.
+
+  let registroDeAcesso = null;
+
+  function lojaDeAcesso(modo, acao) {
+    return new Promise((ok, falha) => {
+      const tx = idb.transaction(['acesso'], modo);
+      tx.oncomplete = () => ok();
+      tx.onabort = () => falha(tx.error ?? new Error('A gravação foi cancelada.'));
+      acao(tx.objectStore('acesso'));
+    });
+  }
+
+  async function gravarAcesso(registro) {
+    await lojaDeAcesso('readwrite', (loja) => loja.put(registro));
+    registroDeAcesso = registro;
+  }
+
+  async function novoRegistroDeAcesso(usuario, senha) {
+    const nomeDoUsuario = texto(usuario, 'Informe o usuário.', 30);
+    if (nomeDoUsuario.length < 3) throw new Erro('O usuário precisa ter pelo menos 3 caracteres.');
+    if (typeof senha !== 'string' || senha.length < 6) throw new Erro('A senha precisa ter pelo menos 6 caracteres.');
+    if (senha.length > 200) throw new Erro('Use no máximo 200 caracteres na senha.');
+    const sal = crypto.getRandomValues(new Uint8Array(16));
+    return {
+      id: 'local',
+      usuario: nomeDoUsuario,
+      sal,
+      iteracoes: ITERACOES_DA_SENHA,
+      hash: await derivarSenha(senha, sal, ITERACOES_DA_SENHA),
+      erros: 0,
+      bloqueado_ate: 0,
+    };
+  }
+
+  /** Quem protege este aparelho ({ usuario }), ou null enquanto o acesso não foi criado. */
+  const acesso = () => (registroDeAcesso ? { usuario: registroDeAcesso.usuario } : null);
+
+  async function criarAcesso(usuario, senha) {
+    if (registroDeAcesso) throw new Erro('Este aparelho já tem usuário e senha.');
+    await gravarAcesso(await novoRegistroDeAcesso(usuario, senha));
+  }
+
+  /**
+   * Confere usuário e senha; não devolve nada quando estão certos e lança Erro quando não.
+   * Depois de 5 erros seguidos impõe uma espera, que dobra a cada novo erro (até 15 minutos).
+   */
+  async function entrar(usuario, senha, agora = Date.now()) {
+    const r = registroDeAcesso;
+    if (!r) throw new Erro('Este aparelho ainda não tem usuário e senha.');
+    if (agora < r.bloqueado_ate) {
+      throw new Erro(`Muitas tentativas. Tente de novo em ${esperaEmTexto(r.bloqueado_ate - agora)}.`);
+    }
+    // A senha é sempre conferida, mesmo com o usuário errado: a resposta não revela qual falhou.
+    const senhaCerta = bytesIguais(await derivarSenha(String(senha ?? ''), r.sal, r.iteracoes), r.hash);
+    const usuarioCerto = typeof usuario === 'string' && mesmoNome(usuario.trim(), r.usuario);
+    if (senhaCerta && usuarioCerto) {
+      if (r.erros || r.bloqueado_ate) await gravarAcesso({ ...r, erros: 0, bloqueado_ate: 0 });
+      return;
+    }
+    const erros = r.erros + 1;
+    const espera = erros < ERROS_SEM_ESPERA ? 0 : Math.min(30_000 * 2 ** (erros - ERROS_SEM_ESPERA), 15 * 60_000);
+    await gravarAcesso({ ...r, erros, bloqueado_ate: espera ? agora + espera : 0 });
+    throw new Erro(espera
+      ? `Usuário ou senha incorretos. Aguarde ${esperaEmTexto(espera)} para tentar de novo.`
+      : 'Usuário ou senha incorretos.');
+  }
+
+  /** Troca usuário e senha, exigindo a senha atual. */
+  async function trocarAcesso(senhaAtual, usuario, senha, agora = Date.now()) {
+    if (!registroDeAcesso) throw new Erro('Este aparelho ainda não tem usuário e senha.');
+    const novo = await novoRegistroDeAcesso(usuario, senha); // valida antes de gastar uma tentativa
+    await entrar(registroDeAcesso.usuario, senhaAtual, agora);
+    await gravarAcesso(novo);
+  }
+
+  /** Apaga deste aparelho todos os dados e o usuário e a senha. O banco fica fechado. */
+  function apagarTudo() {
+    idb.close();
+    return new Promise((ok, falha) => {
+      const pedido = indexedDB.deleteDatabase(nome);
+      pedido.onsuccess = () => ok();
+      pedido.onerror = () => falha(pedido.error);
+    });
+  }
+
   // ---- backup
 
   function exportar() {
@@ -776,7 +893,11 @@ export async function abrirBanco(nome = 'controle-financeiro') {
   }
 
   await recarregar();
+  await lojaDeAcesso('readonly', (loja) => {
+    loja.get('local').onsuccess = (ev) => { registroDeAcesso = ev.target.result ?? null; };
+  });
   return {
+    acesso, criarAcesso, entrar, trocarAcesso, apagarTudo,
     contas, categorias, lancamentos, orcamentos, resumo, csv, fatura, faturasDoCartao,
     salvarConta, excluirConta, salvarCategoria, excluirCategoria,
     salvarLancamento, excluirLancamento, excluirParcelas, definirOrcamento,

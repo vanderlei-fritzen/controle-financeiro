@@ -162,6 +162,31 @@ main {
 
 #view { display: grid; gap: 20px; }
 
+/* ---------- entrada com usuário e senha ---------- */
+
+.entrada {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  padding: 24px 16px;
+}
+
+.entrada-form { display: grid; gap: 14px; width: min(380px, 100%); }
+.entrada-form h1 { font-size: 20px; font-weight: 650; }
+.cartao.entrada-form .texto { margin-bottom: 0; }
+
+.link {
+  justify-self: start;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--destaque);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
 /* ---------- botões e campos ---------- */
 
 .btn {
@@ -183,6 +208,7 @@ main {
 }
 
 .btn:hover { background: var(--lavagem); }
+.btn:disabled { opacity: 0.6; cursor: progress; }
 
 .btn.primario {
   border-color: transparent;

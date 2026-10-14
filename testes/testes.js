@@ -205,6 +205,9 @@ teste('banco da versão anterior: os limites existentes continuam em todos os me
     igual(b.lancamentos({ mes: MES }).map((l) => l.descricao), ['Cinema'], 'lançamentos preservados');
     const [conta] = b.contas();
     igual([conta.banco, conta.agencia, conta.limite, conta.conta_pagamento_id], ['', '', null, null], 'campos novos da conta');
+    igual(b.acesso(), null, 'sem usuário e senha até que sejam criados');
+    await b.criarAcesso('ana', 'segredo1');
+    await b.entrar('ana', 'segredo1');
     await b.definirOrcamento(1, MES, 450_00);
     igual([limite(somarMeses(MES, -1)), limite(MES)], [300_00, 450_00], 'depois da mudança');
   } finally {
@@ -454,6 +457,123 @@ teste('fatura: resumo do cartão e dívida informada no cadastro', async ({ b, c
   await recusa(() => b.fatura(corrente, '2026-11'), 'Só cartões');
   await recusa(() => b.fatura(cartao, '2026-13'), 'Mês inválido');
   await recusa(() => b.fatura(999, '2026-11'), 'não encontrado');
+});
+
+teste('acesso: criar usuário e senha e entrar', async ({ b }, nome) => {
+  igual(b.acesso(), null, 'banco novo não tem acesso');
+  await recusa(() => b.entrar('ana', 'segredo1'), 'ainda não tem');
+  await recusa(() => b.criarAcesso('an', 'segredo1'), 'pelo menos 3');
+  await recusa(() => b.criarAcesso('   ', 'segredo1'), 'Informe o usuário');
+  await recusa(() => b.criarAcesso('ana', '12345'), 'pelo menos 6');
+  await recusa(() => b.criarAcesso('ana', 123456), 'pelo menos 6');
+  igual(b.acesso(), null, 'nenhuma das recusadas criou acesso');
+
+  await b.criarAcesso('  Ana Maria ', 'Segredo 1');
+  igual(b.acesso(), { usuario: 'Ana Maria' });
+  await recusa(() => b.criarAcesso('outro', 'segredo2'), 'já tem');
+  await b.entrar('ana maria', 'Segredo 1'); // o usuário não diferencia maiúsculas; a senha sim
+  await recusa(() => b.entrar('Ana Maria', 'segredo 1'), 'incorretos');
+  await recusa(() => b.entrar('Ana', 'Segredo 1'), 'incorretos');
+  await recusa(() => b.entrar('Ana Maria', ''), 'incorretos');
+  await recusa(() => b.entrar(undefined, undefined), 'incorretos');
+
+  // Fechar e abrir de novo: o acesso continua, e a senha não está gravada em lugar nenhum.
+  b.fechar();
+  const reaberto = await abrirBanco(nome);
+  try {
+    igual(reaberto.acesso(), { usuario: 'Ana Maria' }, 'continua protegido');
+    await reaberto.entrar('Ana Maria', 'Segredo 1');
+    igual(JSON.stringify(reaberto.exportar()).includes('Segredo'), false, 'o backup não leva a senha');
+    igual('acesso' in reaberto.exportar(), false, 'nem o usuário');
+  } finally {
+    reaberto.fechar();
+  }
+  const gravado = await new Promise((ok, falha) => {
+    const pedido = indexedDB.open(nome);
+    pedido.onsuccess = () => {
+      const leitura = pedido.result.transaction(['acesso']).objectStore('acesso').get('local');
+      leitura.onsuccess = () => { pedido.result.close(); ok(leitura.result); };
+      leitura.onerror = () => falha(leitura.error);
+    };
+    pedido.onerror = () => falha(pedido.error);
+  });
+  igual([gravado.usuario, gravado.hash.length, gravado.sal.length, gravado.iteracoes >= 300_000, 'senha' in gravado],
+    ['Ana Maria', 32, 16, true, false], 'guarda só o resultado da derivação, com sal');
+  igual(JSON.stringify(Object.values(gravado)).includes('Segredo'), false, 'senha fora do registro');
+});
+
+teste('acesso: espera crescente depois de erros seguidos', async ({ b }) => {
+  await b.criarAcesso('ana', 'segredo1');
+  const t0 = 1_000_000;
+  const errar = (agora) => b.entrar('ana', 'errada', agora);
+  for (let i = 0; i < 4; i += 1) await recusa(() => errar(t0), 'incorretos.'); // quatro erros sem espera
+  await recusa(() => errar(t0), 'Aguarde 30 segundos');
+  await recusa(() => b.entrar('ana', 'segredo1', t0 + 29_000), 'Muitas tentativas'); // nem a senha certa entra
+  await recusa(() => errar(t0 + 30_000), 'Aguarde 1 minuto'); // a espera dobra
+  await recusa(() => b.entrar('ana', 'segredo1', t0 + 60_000), 'Tente de novo em 30 segundos');
+  await b.entrar('ana', 'segredo1', t0 + 90_000); // depois da espera, a senha certa entra
+  for (let i = 0; i < 4; i += 1) await recusa(() => errar(t0 + 100_000), 'incorretos.'); // e a contagem recomeça
+  for (let i = 0; i < 10; i += 1) await recusa(() => errar(t0 + 10 ** 9 * (i + 1)));
+  await recusa(() => errar(t0 + 10 ** 10 + 1), 'Muitas tentativas. Tente de novo em 15 minutos'); // teto da espera
+});
+
+teste('acesso: trocar usuário e senha', async ({ b }) => {
+  await b.criarAcesso('ana', 'segredo1');
+  await recusa(() => b.trocarAcesso('errada', 'ana', 'outra-senha'), 'incorretos');
+  await recusa(() => b.trocarAcesso('segredo1', 'ana', '123'), 'pelo menos 6');
+  await b.entrar('ana', 'segredo1'); // as recusadas não mudaram nada
+  await b.trocarAcesso('segredo1', 'Beatriz', 'outra-senha');
+  igual(b.acesso(), { usuario: 'Beatriz' });
+  await b.entrar('beatriz', 'outra-senha');
+  await recusa(() => b.entrar('ana', 'segredo1'), 'incorretos');
+});
+
+teste('acesso: restaurar backup não mexe na senha; apagar tudo leva dados e senha', async ({ b, lancar }, nome) => {
+  await b.criarAcesso('ana', 'segredo1');
+  await lancar('receita', 10_00);
+  const backup = JSON.parse(JSON.stringify(b.exportar()));
+  await lancar('despesa', 5_00);
+  await b.importar(backup);
+  igual([b.acesso(), b.exportar().lancamentos.length], [{ usuario: 'ana' }, 1], 'dados do backup, acesso de antes');
+  await b.entrar('ana', 'segredo1');
+
+  await b.apagarTudo();
+  const novo = await abrirBanco(nome);
+  try {
+    igual([novo.acesso(), novo.exportar().lancamentos.length, novo.contas().length], [null, 0, 2], 'aparelho como novo');
+  } finally {
+    novo.fechar();
+  }
+});
+
+teste('banco já em uso, de antes do usuário e da senha: os dados seguem lá', async (_contexto, nome) => {
+  const antigo = `${nome}-v2`;
+  // Banco no formato da versão publicada antes da tranca: tudo, menos a loja de acesso.
+  await new Promise((ok, falha) => {
+    const pedido = indexedDB.open(antigo, 2);
+    pedido.onupgradeneeded = () => {
+      const idb = pedido.result;
+      idb.createObjectStore('contas', { keyPath: 'id', autoIncrement: true })
+        .add({ nome: 'Carteira', tipo: 'carteira', saldo_inicial: 50_00, arquivada: false });
+      idb.createObjectStore('categorias', { keyPath: 'id', autoIncrement: true }).add({ nome: 'Lazer', tipo: 'despesa' });
+      idb.createObjectStore('lancamentos', { keyPath: 'id', autoIncrement: true })
+        .add({ data: HOJE, descricao: 'Cinema', valor: 40_00, tipo: 'despesa', conta_id: 1, conta_destino_id: null, categoria_id: 1 });
+      idb.createObjectStore('orcamentos', { keyPath: ['categoria_id', 'mes'] }).add({ categoria_id: 1, mes: MES, limite: 300_00 });
+    };
+    pedido.onsuccess = () => { pedido.result.close(); ok(); };
+    pedido.onerror = () => falha(pedido.error);
+  });
+  const b = await abrirBanco(antigo);
+  try {
+    const estado = () => [b.contas()[0].saldo, b.lancamentos({ mes: MES }).map((l) => l.descricao), b.orcamentos(MES)[0].limite];
+    igual([estado(), b.acesso()], [[10_00, ['Cinema'], 300_00], null], 'dados intactos e ainda sem acesso');
+    await b.criarAcesso('ana', 'segredo1');
+    await b.entrar('ana', 'segredo1');
+    igual(estado(), [10_00, ['Cinema'], 300_00], 'criar o acesso não mexe nos dados');
+  } finally {
+    b.fechar();
+    indexedDB.deleteDatabase(antigo);
+  }
 });
 
 teste('exportar CSV', async ({ b, cat, lancar }) => {

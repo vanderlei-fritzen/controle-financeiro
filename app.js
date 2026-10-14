@@ -100,6 +100,7 @@ const ROTULO_FATURA = {
 
 let banco;
 let convite = null; // evento do navegador que permite oferecer "Instalar app"
+let liberado = false; // true depois de entrar com usuário e senha; antes disso nada é mostrado
 
 const estado = {
   mes: isoMes(new Date()),
@@ -1265,10 +1266,139 @@ function viewAjustes() {
   // O backup vem primeiro: é o que se procura ao chegar aqui, sobretudo em um aparelho novo.
   return [
     cartaoBackup(),
+    cartaoAcesso(),
     h('div', { class: 'grade-2' },
       blocoCategorias('despesa', 'Categorias de despesa'),
       blocoCategorias('receita', 'Categorias de receita')),
   ];
+}
+
+// ---------------------------------------------------------------- usuário e senha
+//
+// É uma tranca de acesso neste aparelho: enquanto o app está bloqueado, a página não
+// contém dado nenhum. Não é criptografia; os dados continuam no armazenamento do navegador.
+
+const BLOQUEAR_APOS_MS = 5 * 60_000; // tempo fora do app que faz voltar a pedir a senha
+
+const campoUsuario = (valor = '') => h('input', {
+  type: 'text', maxlength: 30, autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', value: valor,
+});
+const campoSenha = (autocomplete) => h('input', { type: 'password', maxlength: 200, autocomplete });
+
+// Formulário mostrado no lugar do app enquanto ele está bloqueado.
+function formularioDeEntrada({ titulo, texto, campos, botao, aoEnviar, rodape }) {
+  const erro = h('p', { class: 'form-erro', role: 'alert', hidden: true });
+  const enviar = h('button', { type: 'submit', class: 'btn primario' }, botao);
+  return h('form', {
+    class: 'cartao entrada-form',
+    novalidate: true,
+    onsubmit: async (ev) => {
+      ev.preventDefault();
+      erro.hidden = true;
+      enviar.disabled = true; // conferir a senha leva um instante, de propósito
+      try {
+        await aoEnviar();
+        liberar();
+      } catch (falha) {
+        erro.textContent = falha.message;
+        erro.hidden = false;
+        enviar.disabled = false;
+      }
+    },
+  }, h('h1', {}, titulo), h('p', { class: 'texto' }, texto), campos, erro, enviar, rodape);
+}
+
+function telaCriarAcesso() {
+  const usuario = campoUsuario();
+  const senha = campoSenha('new-password');
+  const repetida = campoSenha('new-password');
+  return formularioDeEntrada({
+    titulo: 'Crie seu acesso',
+    texto: 'Escolha o usuário e a senha que o app vai pedir neste aparelho. Guarde bem a senha: ela não '
+      + 'pode ser recuperada, e sem ela a única saída é apagar os dados do aparelho.',
+    campos: [campo('Usuário', usuario), campo('Senha (6 caracteres ou mais)', senha), campo('Repita a senha', repetida)],
+    botao: 'Criar acesso',
+    aoEnviar: async () => {
+      if (senha.value !== repetida.value) throw new Error('As duas senhas não são iguais.');
+      await banco.criarAcesso(usuario.value, senha.value);
+    },
+  });
+}
+
+function telaEntrar() {
+  const usuario = campoUsuario();
+  const senha = campoSenha('current-password');
+  return formularioDeEntrada({
+    titulo: 'Controle Financeiro',
+    texto: 'Entre com o usuário e a senha deste aparelho.',
+    campos: [campo('Usuário', usuario), campo('Senha', senha)],
+    botao: 'Entrar',
+    aoEnviar: () => banco.entrar(usuario.value, senha.value),
+    rodape: h('button', { type: 'button', class: 'link', onclick: esqueciASenha }, 'Esqueci a senha'),
+  });
+}
+
+async function esqueciASenha() {
+  const resposta = prompt('A senha não pode ser recuperada.\n\nA única saída é apagar deste aparelho todos os '
+    + 'dados e o usuário e a senha, e começar de novo. Se você tiver um arquivo de backup, poderá restaurá-lo '
+    + 'depois.\n\nPara apagar tudo, digite APAGAR:');
+  if (resposta?.trim().toUpperCase() !== 'APAGAR') return;
+  await banco.apagarTudo();
+  location.reload();
+}
+
+// Tira o app da tela e pede o usuário e a senha (ou a criação deles, no primeiro uso).
+function bloquear() {
+  liberado = false;
+  if ($('#dialogo').open) $('#dialogo').close();
+  esconderDica();
+  $('#view').replaceChildren(); // nenhum dado fica na página enquanto ela está bloqueada
+  $('.app').hidden = true;
+  document.title = 'Controle Financeiro';
+  const entrada = $('#entrada');
+  entrada.replaceChildren(banco.acesso() ? telaEntrar() : telaCriarAcesso());
+  entrada.hidden = false;
+  entrada.querySelector('input').focus();
+}
+
+function liberar() {
+  liberado = true;
+  $('#entrada').hidden = true;
+  $('#entrada').replaceChildren();
+  $('.app').hidden = false;
+  carregarBase();
+  renderizar();
+}
+
+function cartaoAcesso() {
+  return cartao(
+    { titulo: 'Usuário e senha', sub: `Este aparelho está protegido pelo usuário ${banco.acesso().usuario}` },
+    h('p', { class: 'texto' }, 'O app pede usuário e senha ao abrir e depois de 5 minutos fora dele. A senha não '
+      + 'pode ser recuperada: sem ela, a única saída é apagar os dados deste aparelho e restaurar um backup.'),
+    h('div', { class: 'campo-linha quebra' },
+      h('button', { type: 'button', class: 'btn', onclick: () => dialogoAcesso() }, 'Alterar usuário e senha'),
+      h('button', { type: 'button', class: 'btn', onclick: () => bloquear() }, 'Sair')));
+}
+
+function dialogoAcesso() {
+  const atual = campoSenha('current-password');
+  const usuario = campoUsuario(banco.acesso().usuario);
+  const nova = campoSenha('new-password');
+  const repetida = campoSenha('new-password');
+  abrirDialogo({
+    titulo: 'Alterar usuário e senha',
+    corpo: [
+      campo('Senha atual', atual),
+      campo('Usuário', usuario),
+      campo('Nova senha (6 caracteres ou mais)', nova),
+      campo('Repita a nova senha', repetida),
+    ],
+    aoSalvar: async () => {
+      if (nova.value !== repetida.value) throw new Error('As duas senhas novas não são iguais.');
+      await banco.trocarAcesso(atual.value, usuario.value, nova.value);
+      avisar('Usuário e senha alterados.');
+    },
+  });
 }
 
 // ---------------------------------------------------------------- navegação
@@ -1296,6 +1426,7 @@ function telaDeErro(erro) {
 }
 
 function renderizar() {
+  if (!liberado) return;
   const { nome, view, parametro } = telaAtual();
 
   $('#titulo').textContent = view.titulo;
@@ -1350,12 +1481,19 @@ window.addEventListener('appinstalled', () => {
   if (location.hash === '#ajustes') renderizar();
 });
 
+// Depois de um tempo fora do app (outro aplicativo, tela apagada), a senha é pedida de novo.
+let ocultoDesde = null;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) ocultoDesde = Date.now();
+  else if (liberado && ocultoDesde !== null && Date.now() - ocultoDesde > BLOQUEAR_APOS_MS) bloquear();
+});
+
 try {
   banco = await abrirBanco();
-  carregarBase();
-  renderizar();
+  bloquear(); // o app sempre começa pedindo o usuário e a senha
 } catch (erro) {
-  $('#view').replaceChildren(telaDeErro(erro));
+  $('#entrada').replaceChildren(telaDeErro(erro));
+  $('#entrada').hidden = false;
 }
 
 // Guarda os arquivos do app no aparelho para ele abrir sem internet.
